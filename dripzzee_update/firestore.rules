@@ -1,0 +1,196 @@
+rules_version = '2';
+
+// Dripzzee security rules — shared by the customer and retailer apps.
+//
+// Roles come from Firebase Auth custom claims set by an admin script:
+//   retailer: { role: 'retailer', storeId: '<storeId>' }
+//   admin:    { role: 'admin' }
+// Customers have no claim; their users/{uid}.role is 'customer'.
+//
+// Money and stock never change from a client: orders are created and
+// cancelled only by Cloud Functions (Admin SDK bypasses these rules).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    function isAdmin() { return signedIn() && request.auth.token.get('role', '') == 'admin'; }
+    function isRetailer() {
+      return signedIn()
+        && request.auth.token.get('role', '') == 'retailer'
+        && request.auth.token.get('storeId', '') != '';
+    }
+    function ownsStore(storeId) { return isRetailer() && request.auth.token.storeId == storeId; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanged(keys) { return changed().hasOnly(keys); }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+
+      allow create: if isSelf(uid)
+        && request.resource.data.role == 'customer'
+        && request.resource.data.keys().hasOnly(
+             ['name', 'email', 'phone', 'photoUrl', 'role', 'location', 'fcmTokens', 'dob', 'gender', 'createdAt', 'updatedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 60;
+
+      allow update: if isSelf(uid)
+        && onlyChanged(['name', 'phone', 'email', 'dob', 'gender', 'photoUrl', 'location', 'fcmTokens', 'updatedAt'])
+        && request.resource.data.role == resource.data.role
+        && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() <= 60))
+        && (!('phone' in request.resource.data) || (request.resource.data.phone is string && request.resource.data.phone.size() <= 15))
+        && (!('email' in request.resource.data) || (request.resource.data.email is string && request.resource.data.email.size() <= 120))
+        && (!('dob' in request.resource.data) || request.resource.data.dob == null || (request.resource.data.dob is string && request.resource.data.dob.size() == 10))
+        && (!('gender' in request.resource.data) || (request.resource.data.gender is string && request.resource.data.gender.size() <= 20))
+        && (!('fcmTokens' in request.resource.data) || (request.resource.data.fcmTokens is list && request.resource.data.fcmTokens.size() <= 20));
+
+      allow delete: if false;
+
+      match /addresses/{addressId} {
+        allow read, delete: if isSelf(uid);
+        allow create, update: if isSelf(uid)
+          && request.resource.data.keys().hasOnly(
+               ['label', 'name', 'phone', 'line1', 'line2', 'landmark', 'city', 'state', 'pincode', 'lat', 'lng', 'isDefault'])
+          && request.resource.data.name is string && request.resource.data.name.size() <= 60
+          && request.resource.data.line1 is string && request.resource.data.line1.size() <= 120
+          && request.resource.data.pincode is string && request.resource.data.pincode.size() == 6
+          && request.resource.data.isDefault is bool;
+      }
+
+      match /wishlist/{productId} {
+        allow read, delete: if isSelf(uid);
+        allow create, update: if isSelf(uid)
+          && request.resource.data.productId == productId
+          && request.resource.data.keys().hasOnly(
+               ['productId', 'storeId', 'storeName', 'name', 'imageUrl', 'price', 'addedAt']);
+      }
+    }
+
+    // Restock alerts query wishlists across users (Admin SDK only).
+    match /{path=**}/wishlist/{productId} {
+      allow read: if false;
+    }
+
+    // ---------- coupons ----------
+    // Created by admins (console or Admin SDK); enforced by createOrder.
+    match /coupons/{code} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---------- stores ----------
+    match /stores/{storeId} {
+      allow read: if signedIn();
+      allow create: if isAdmin() || (ownsStore(storeId)
+        && !('rating' in request.resource.data)
+        && !('ratingSum' in request.resource.data)
+        && !('ratingCount' in request.resource.data));
+      // Retailers manage their store but can't touch ratings (set by functions).
+      allow update: if isAdmin() || (ownsStore(storeId)
+        && !changed().hasAny(['rating', 'ratingSum', 'ratingCount']));
+      allow delete: if isAdmin();
+    }
+
+    // ---------- products ----------
+    match /products/{productId} {
+      allow read: if signedIn();
+      allow create: if isAdmin() || (isRetailer()
+        && request.resource.data.storeId == request.auth.token.storeId
+        && request.resource.data.price is number && request.resource.data.price > 0
+        && request.resource.data.sizes is map);
+      allow update: if isAdmin() || (ownsStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.price is number && request.resource.data.price > 0);
+      allow delete: if isAdmin() || ownsStore(resource.data.storeId);
+    }
+
+    // ---------- orders ----------
+    match /orders/{orderId} {
+      allow read: if signedIn() && (
+        resource.data.customerId == request.auth.uid
+        || ownsStore(resource.data.storeId)
+        || isAdmin());
+
+      // Only Cloud Functions create orders (validated prices + stock).
+      allow create: if false;
+
+      // Retailers move orders through fulfilment. Customers never write orders
+      // directly (cancel goes through the cancelOrder function).
+      allow update: if isAdmin() || (ownsStore(resource.data.storeId)
+        && onlyChanged(['status', 'updatedAt', 'rejectReason', 'cancelReason', 'retailerNote', 'eta', 'riderName', 'riderPhone'])
+        && request.resource.data.status in [
+             'RETAILER_CONFIRMING', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP',
+             'PICKED_UP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'REJECTED']
+        && !(resource.data.status in ['PAYMENT_PENDING', 'CANCELLED', 'REJECTED', 'DELIVERED', 'RETURN_REQUESTED']));
+
+      allow delete: if false;
+    }
+
+    // ---------- returns & exchanges ----------
+    // Document id = order id, so there is at most one request per order.
+    match /return_requests/{orderId} {
+      allow read: if signedIn() && (
+        resource.data.customerId == request.auth.uid
+        || ownsStore(resource.data.storeId)
+        || isAdmin());
+
+      allow create: if signedIn()
+        && request.resource.data.orderId == orderId
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.status == 'REQUESTED'
+        && request.resource.data.type in ['RETURN', 'EXCHANGE']
+        && request.resource.data.items is list
+        && request.resource.data.items.size() > 0
+        && request.resource.data.items.size() <= 20
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() <= 80
+        && request.resource.data.details is string
+        && request.resource.data.details.size() <= 500
+        && request.resource.data.keys().hasOnly(
+             ['orderId', 'customerId', 'storeId', 'storeName', 'type', 'items', 'reason', 'details', 'status', 'createdAt', 'updatedAt'])
+        && orderEligibleForReturn(orderId);
+
+      allow update: if isAdmin() || (ownsStore(resource.data.storeId)
+        && onlyChanged(['status', 'resolutionNote', 'updatedAt', 'pickupAt'])
+        && request.resource.data.status in ['APPROVED', 'REJECTED', 'COMPLETED']);
+
+      allow delete: if false;
+    }
+
+    function orderEligibleForReturn(orderId) {
+      let order = get(/databases/$(database)/documents/orders/$(orderId)).data;
+      return order.customerId == request.auth.uid
+        && order.storeId == request.resource.data.storeId
+        && order.status == 'DELIVERED'
+        && order.deliveredAt is timestamp
+        && request.time < order.deliveredAt + duration.value(order.get('returnWindowDays', 7), 'd');
+    }
+
+    // ---------- reviews ----------
+    // Document id = order id → one review per order.
+    match /reviews/{orderId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.orderId == orderId
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() <= 300
+        && request.resource.data.keys().hasOnly(
+             ['orderId', 'customerId', 'storeId', 'rating', 'comment', 'customerName', 'createdAt'])
+        && reviewableOrder(orderId);
+      allow update, delete: if false;
+    }
+
+    function reviewableOrder(orderId) {
+      let order = get(/databases/$(database)/documents/orders/$(orderId)).data;
+      return order.customerId == request.auth.uid
+        && order.storeId == request.resource.data.storeId
+        && order.status in ['DELIVERED', 'RETURN_REQUESTED'];
+    }
+  }
+}

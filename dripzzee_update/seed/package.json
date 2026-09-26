@@ -1,0 +1,13 @@
+{
+  "name": "dripzzee-seed",
+  "private": true,
+  "description": "Seeds demo stores and products around a location",
+  "main": "seed.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

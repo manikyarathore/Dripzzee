@@ -1,0 +1,27 @@
+rules_version = '2';
+
+// Product and store images. Anyone signed in can view; only the store's
+// retailer (custom claims role=retailer, storeId) or an admin can upload.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAdmin() { return request.auth != null && request.auth.token.role == 'admin'; }
+    function ownsStore(storeId) {
+      return request.auth != null
+        && request.auth.token.role == 'retailer'
+        && request.auth.token.storeId == storeId;
+    }
+    function isImage() {
+      return request.resource.contentType.matches('image/.*')
+        && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    match /stores/{storeId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if (ownsStore(storeId) || isAdmin()) && (request.resource == null || isImage());
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

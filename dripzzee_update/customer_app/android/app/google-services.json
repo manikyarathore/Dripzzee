@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1067483170725",
+    "project_id": "dripzzee1",
+    "storage_bucket": "dripzzee1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1067483170725:android:52f04ceca43209bbb64a4c",
+        "android_client_info": {
+          "package_name": "com.dripzzee.customer_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1067483170725-dlv0dk73f4k1s6o9hkgoqk8g17e9fh5a.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.dripzzee.customer_app",
+            "certificate_hash": "7f326e9aa66466bbd3654e60d1cda2fc83333119"
+          }
+        },
+        {
+          "client_id": "1067483170725-hflfv1tnsho3adg0r9r93rd8lclo8vbk.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDqaqyE38EsYc6MSjuVA2KFttIi9ePEjrM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1067483170725-hflfv1tnsho3adg0r9r93rd8lclo8vbk.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
